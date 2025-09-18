@@ -727,11 +727,13 @@ router.post('/stop', authMiddleware, async (req, res) => {
           message: 'Transmissão de playlist finalizada com sucesso'
         });
       } else {
+      }
       res.json({
         success: true,
         is_live: false,
           message: 'Nenhuma transmissão de playlist ativa encontrada'
-    }
+          }
+      )
 
     } else if (stream_type === 'obs') {
       // Parar transmissão OBS
