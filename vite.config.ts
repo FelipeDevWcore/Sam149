@@ -10,19 +10,13 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: process.env.NODE_ENV === 'production' ? 'http://samhost.wcore.com.br:3001' : 'http://localhost:3001',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/content': {
-        target: process.env.NODE_ENV === 'production' ? 'http://samhost.wcore.com.br:3001' : 'http://localhost:3001',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
         timeout: 30000,
-        followRedirects: true,
       },
-      '/vod': {
-        target: process.env.NODE_ENV === 'production' ? 'http://samhost.wcore.com.br' : 'http://localhost',
+      '/content': {
+        target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
         timeout: 30000,

@@ -207,7 +207,7 @@ const Dashboard: React.FC = () => {
         
         // Definir URL do player e nome baseado no status
         if (data.is_live) {
-          if (data.stream_type === 'obs' || data.obs_stream?.is_live) {
+          if (data.stream_type === 'obs' && data.obs_stream?.is_live) {
             // Para OBS, usar URL do player na porta do sistema
             const baseUrl = process.env.NODE_ENV === 'production' 
               ? 'http://samhost.wcore.com.br:3001'
@@ -221,23 +221,10 @@ const Dashboard: React.FC = () => {
               : 'http://localhost:3001';
             setCurrentVideoUrl(`${baseUrl}/api/player-port/iframe?login=${userLogin}&playlist=${data.transmission.codigo_playlist}&player=1&contador=true&compartilhamento=true`);
             
-            // Buscar nome da playlist
-            if (data.transmission.codigo_playlist) {
-              try {
-                const playlistResponse = await fetch(`/api/playlists`, {
-                  headers: { Authorization: `Bearer ${token}` }
-                });
-                if (playlistResponse.ok) {
-                  const playlists = await playlistResponse.json();
-                  const playlist = playlists.find((p: any) => p.id === data.transmission.codigo_playlist);
-                  setPlaylistName(playlist ? `📺 Playlist: ${playlist.nome}` : data.transmission.titulo);
-                }
-              } catch (error) {
-                setPlaylistName(data.transmission.titulo);
-              }
-            } else {
-              setPlaylistName(data.transmission.titulo);
-            }
+            // Usar nome da playlist da resposta
+            setPlaylistName(data.transmission.playlist_nome ? 
+              `📺 Playlist: ${data.transmission.playlist_nome}` : 
+              data.transmission.titulo);
           }
           setShowPlayer(true);
         } else {

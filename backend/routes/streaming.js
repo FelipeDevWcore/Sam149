@@ -78,6 +78,43 @@ const platforms = [
   }
 ];
 
+// Verificar se tabela transmissoes existe
+router.use(async (req, res, next) => {
+  try {
+    await db.execute('DESCRIBE transmissoes');
+    next();
+  } catch (error) {
+    // Tabela não existe, criar
+    try {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS transmissoes (
+          codigo INT AUTO_INCREMENT PRIMARY KEY,
+          codigo_stm INT NOT NULL,
+          titulo VARCHAR(255) NOT NULL,
+          descricao TEXT,
+          codigo_playlist INT,
+          status ENUM('ativa','pausada','finalizada') DEFAULT 'ativa',
+          data_inicio DATETIME DEFAULT CURRENT_TIMESTAMP,
+          data_fim DATETIME NULL,
+          gravacao_ativa TINYINT(1) DEFAULT 0,
+          loop_playlist TINYINT(1) DEFAULT 1,
+          use_smil TINYINT(1) DEFAULT 1,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_codigo_stm (codigo_stm),
+          INDEX idx_status (status),
+          INDEX idx_playlist (codigo_playlist)
+        )
+      `);
+      console.log('✅ Tabela transmissoes criada com sucesso');
+      next();
+    } catch (createError) {
+      console.error('Erro ao criar tabela transmissoes:', createError);
+      res.status(500).json({ error: 'Erro ao inicializar tabela de transmissões' });
+    }
+  }
+});
+
 // GET /api/streaming/platforms - Lista plataformas disponíveis
 router.get('/platforms', authMiddleware, async (req, res) => {
   try {
@@ -459,31 +496,32 @@ router.delete('/remove-live/:id', authMiddleware, async (req, res) => {
 router.get('/status', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
+    const userLogin = req.user.usuario || (req.user.email ? req.user.email.split('@')[0] : `user_${userId}`);
 
-    // Verificar transmissões ativas
+    // Verificar transmissões de playlist ativas
     const [activeRows] = await db.execute(
-      'SELECT * FROM lives WHERE codigo_stm = ? AND status = "1" ORDER BY data_inicio DESC LIMIT 1',
+      'SELECT t.*, p.nome as playlist_nome FROM transmissoes t LEFT JOIN playlists p ON t.codigo_playlist = p.id WHERE t.codigo_stm = ? AND t.status = "ativa" ORDER BY t.data_inicio DESC LIMIT 1',
       [userId]
     );
 
     if (activeRows.length > 0) {
-      const activeLive = activeRows[0];
+      const activeTransmission = activeRows[0];
       const now = new Date();
-      const dataInicio = new Date(activeLive.data_inicio);
+      const dataInicio = new Date(activeTransmission.data_inicio);
       const diffMs = now.getTime() - dataInicio.getTime();
       const uptime = formatDuration(Math.floor(diffMs / 1000));
 
       res.json({
         success: true,
         is_live: true,
-        stream_type: 'live',
+        stream_type: 'playlist',
         transmission: {
-          id: activeLive.codigo,
-          tipo: activeLive.tipo,
-          servidor_stm: activeLive.servidor_stm,
-          servidor_live: activeLive.servidor_live,
-          data_inicio: activeLive.data_inicio,
-          data_fim: activeLive.data_fim,
+          id: activeTransmission.codigo,
+          titulo: activeTransmission.titulo,
+          codigo_playlist: activeTransmission.codigo_playlist,
+          playlist_nome: activeTransmission.playlist_nome,
+          data_inicio: activeTransmission.data_inicio,
+          data_fim: activeTransmission.data_fim,
           stats: {
             viewers: Math.floor(Math.random() * 50) + 10, // Simular espectadores
             bitrate: 2500,
@@ -493,16 +531,244 @@ router.get('/status', authMiddleware, async (req, res) => {
         }
       });
     } else {
-      res.json({
-        success: true,
-        is_live: false,
-        stream_type: null,
-        transmission: null
+      // Verificar transmissões OBS (lives)
+      const [obsRows] = await db.execute(
+        'SELECT * FROM lives WHERE codigo_stm = ? AND status = "1" ORDER BY data_inicio DESC LIMIT 1',
+        [userId]
+      );
+
+      if (obsRows.length > 0) {
+        const obsLive = obsRows[0];
+        const now = new Date();
+        const dataInicio = new Date(obsLive.data_inicio);
+        const diffMs = now.getTime() - dataInicio.getTime();
+        const uptime = formatDuration(Math.floor(diffMs / 1000));
+
+        res.json({
+          success: true,
+          is_live: true,
+          stream_type: 'obs',
+          obs_stream: {
+            is_live: true,
+            viewers: Math.floor(Math.random() * 30) + 5,
+            bitrate: 2500,
+            uptime: uptime,
+            recording: false
+          }
+        });
+      } else {
+        res.json({
+          success: true,
+          is_live: false,
+          stream_type: null,
+          transmission: null
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Erro ao verificar status:', error);
+    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+  }
+});
+
+// POST /api/streaming/start - Iniciar transmissão de playlist
+router.post('/start', authMiddleware, async (req, res) => {
+  try {
+    const {
+      titulo,
+      descricao,
+      playlist_id,
+      platform_ids = [],
+      enable_recording = false,
+      use_smil = true,
+      loop_playlist = true
+    } = req.body;
+
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || (req.user.email ? req.user.email.split('@')[0] : `user_${userId}`);
+
+    if (!titulo || !playlist_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Título e playlist são obrigatórios'
       });
     }
 
+    // Verificar se playlist existe e tem vídeos
+    const [playlistRows] = await db.execute(
+      'SELECT id, nome, total_videos FROM playlists WHERE id = ? AND codigo_stm = ?',
+      [playlist_id, userId]
+    );
+
+    if (playlistRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Playlist não encontrada'
+      });
+    }
+
+    const playlist = playlistRows[0];
+    if (playlist.total_videos === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'A playlist deve ter pelo menos um vídeo'
+      });
+    }
+
+    // Verificar se já há transmissão ativa
+    const [activeTransmission] = await db.execute(
+      'SELECT codigo FROM transmissoes WHERE codigo_stm = ? AND status = "ativa"',
+      [userId]
+    );
+
+    if (activeTransmission.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Já existe uma transmissão ativa. Finalize-a antes de iniciar uma nova.'
+      });
+    }
+
+    // Inserir nova transmissão
+    const [result] = await db.execute(
+      `INSERT INTO transmissoes (
+        codigo_stm, titulo, descricao, codigo_playlist, status, data_inicio, 
+        gravacao_ativa, loop_playlist, use_smil
+      ) VALUES (?, ?, ?, ?, 'ativa', NOW(), ?, ?, ?)`,
+      [userId, titulo, descricao || '', playlist_id, enable_recording ? 1 : 0, loop_playlist ? 1 : 0, use_smil ? 1 : 0]
+    );
+
+    const transmissionId = result.insertId;
+
+    // Atualizar arquivo SMIL do usuário
+    try {
+      const [serverRows] = await db.execute(
+        'SELECT servidor_id FROM folders WHERE user_id = ? LIMIT 1',
+        [userId]
+      );
+      const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
+      
+      const PlaylistSMILService = require('../services/PlaylistSMILService');
+      await PlaylistSMILService.updateUserSMIL(userId, userLogin, serverId);
+      console.log(`✅ Arquivo SMIL atualizado para transmissão da playlist ${playlist_id}`);
+    } catch (smilError) {
+      console.warn('Erro ao atualizar arquivo SMIL:', smilError.message);
+    }
+
+    // URLs do player
+    const wowzaHost = 'stmv1.udicast.com';
+    const playerUrls = {
+      hls: `http://${wowzaHost}:1935/samhost/smil:playlists_agendamentos.smil/playlist.m3u8`,
+      hls_http: `http://${wowzaHost}/samhost/smil:playlists_agendamentos.smil/playlist.m3u8`,
+      rtmp: `rtmp://${wowzaHost}:1935/samhost/smil:playlists_agendamentos.smil`,
+      rtsp: `rtsp://${wowzaHost}:554/samhost/smil:playlists_agendamentos.smil`,
+      dash: `http://${wowzaHost}:1935/samhost/smil:playlists_agendamentos.smil/manifest.mpd`
+    };
+
+    console.log(`✅ Transmissão de playlist iniciada - ID: ${transmissionId}, Playlist: ${playlist.nome}`);
+
+    res.json({
+      success: true,
+      message: `Transmissão da playlist "${playlist.nome}" iniciada com sucesso`,
+      transmission: {
+        id: transmissionId,
+        titulo,
+        codigo_playlist: playlist_id,
+        playlist_nome: playlist.nome,
+        status: 'ativa',
+        data_inicio: new Date().toISOString(),
+        stats: {
+          viewers: 0,
+          bitrate: 2500,
+          uptime: '00:00:00',
+          isActive: true
+        }
+      },
+      player_urls: playerUrls,
+      wowza_data: {
+        rtmpUrl: `rtmp://${wowzaHost}:1935/samhost`,
+        streamName: userLogin,
+        hlsUrl: playerUrls.hls,
+        bitrate: 2500
+      }
+    });
   } catch (error) {
-    console.error('Erro ao verificar status:', error);
+    console.error('Erro ao iniciar transmissão:', error);
+    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+  }
+});
+
+// POST /api/streaming/stop - Parar transmissão
+router.post('/stop', authMiddleware, async (req, res) => {
+  try {
+    const { transmission_id, stream_type } = req.body;
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || (req.user.email ? req.user.email.split('@')[0] : `user_${userId}`);
+
+    if (stream_type === 'playlist' || !stream_type) {
+      // Parar transmissão de playlist
+      const [transmissionRows] = await db.execute(
+        'SELECT codigo FROM transmissoes WHERE codigo_stm = ? AND status = "ativa"',
+        [userId]
+      );
+
+      if (transmissionRows.length > 0) {
+        const transmissionId = transmission_id || transmissionRows[0].codigo;
+        
+        // Atualizar status da transmissão
+        await db.execute(
+          'UPDATE transmissoes SET status = "finalizada", data_fim = NOW() WHERE codigo = ?',
+          [transmissionId]
+        );
+
+        console.log(`✅ Transmissão de playlist finalizada - ID: ${transmissionId}`);
+
+        res.json({
+          success: true,
+          message: 'Transmissão de playlist finalizada com sucesso'
+        });
+      } else {
+      res.json({
+        success: true,
+        is_live: false,
+          message: 'Nenhuma transmissão de playlist ativa encontrada'
+    }
+
+    } else if (stream_type === 'obs') {
+      // Parar transmissão OBS
+      const [obsRows] = await db.execute(
+        'SELECT codigo FROM lives WHERE codigo_stm = ? AND status = "1"',
+        [userId]
+      );
+
+      if (obsRows.length > 0) {
+        const liveId = transmission_id || obsRows[0].codigo;
+        
+        // Atualizar status da live
+        await db.execute(
+          'UPDATE lives SET status = "0", data_fim = NOW() WHERE codigo = ?',
+          [liveId]
+        );
+
+        console.log(`✅ Transmissão OBS finalizada - ID: ${liveId}`);
+
+        res.json({
+          success: true,
+          message: 'Transmissão OBS finalizada com sucesso'
+        });
+      } else {
+        res.json({
+          success: true,
+          message: 'Nenhuma transmissão OBS ativa encontrada'
+        });
+      }
+    } else {
+      res.json({
+        success: true,
+        message: 'Nenhuma transmissão ativa encontrada'
+      });
+    }
+  } catch (error) {
+    console.error('Erro ao parar transmissão:', error);
     res.status(500).json({ success: false, error: 'Erro interno do servidor' });
   }
 });

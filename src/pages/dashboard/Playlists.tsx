@@ -523,10 +523,11 @@ const Playlists: React.FC = () => {
       const token = await getToken();
       
       // Primeiro salvar a playlist atual
-      await savePlaylist();
-      
-      // Aguardar salvamento
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (playlistVideos.length > 0) {
+        await savePlaylist();
+        // Aguardar salvamento
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
       
       // Iniciar transmissão da playlist
       const response = await fetch('/api/streaming/start', {

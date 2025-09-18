@@ -146,18 +146,12 @@ router.get('/iframe', async (req, res) => {
           console.log(`⚠️ Nenhuma transmissão de playlist para usuário ${login}, verificando OBS...`);
           
           // 2. Verificar transmissão OBS
-          const [obsTransmission] = await db.execute(
-            'SELECT l.* FROM lives l LEFT JOIN streamings s ON l.codigo_stm = s.codigo_cliente WHERE (s.usuario = ? OR s.email LIKE ?) AND l.status = "1" LIMIT 1',
-            [login, `${login}@%`]
-          );
-          
-          if (obsTransmission.length > 0) {
-            console.log(`✅ Transmissão OBS encontrada:`, obsTransmission[0]);
+          try {
             const wowzaHost = 'stmv1.udicast.com';
             videoUrl = `http://${wowzaHost}:1935/samhost/${login}_live/playlist.m3u8`;
             title = `Stream OBS: ${login}`;
             isLive = true;
-          } else {
+          } catch (obsError) {
             console.log(`⚠️ Nenhuma transmissão ativa para usuário ${login}`);
             // Sem transmissão ativa - mostrar "sem sinal"
             videoUrl = '';
@@ -198,7 +192,7 @@ router.get('/iframe', async (req, res) => {
           title = `Playlist: ${playlistRows[0].nome}`;
           // Para playlist, usar o primeiro vídeo
           const [videoRows] = await db.execute(
-            'SELECT v.url, v.nome, v.caminho FROM videos v WHERE v.playlist_id = ? ORDER BY v.id LIMIT 1',
+            'SELECT v.url, v.nome, v.caminho FROM videos v WHERE v.playlist_id = ? ORDER BY v.ordem_playlist ASC, v.id ASC LIMIT 1',
             [playlist]
           );
           
@@ -276,8 +270,8 @@ router.get('/iframe', async (req, res) => {
       title,
       isLive,
       userLogin,
-      hasPlaylistTransmission: playlistTransmissionRows?.length > 0,
-      hasOBSTransmission: obsRows?.length > 0
+      hasPlaylistTransmission: false,
+      hasOBSTransmission: false
     });
 
     // Gerar HTML do player
@@ -370,16 +364,27 @@ function generatePlayerHTML(options) {
          width="100%" height="100%" 
          data-setup='{ "fluid":true,"aspectRatio":"${aspectRatio}" }'>
     <source src="${videoUrl}" type="application/x-mpegURL">
-  </video>
+          playlist_m3u8_url: `http://${wowzaHost}:1935/samhost/smil:playlists_agendamentos.smil/playlist.m3u8`
   
   <script src="//vjs.zencdn.net/7.8.4/video.js"></script>
   <script src="//cdnjs.cloudflare.com/ajax/libs/videojs-contrib-hls/5.12.0/videojs-contrib-hls.min.js"></script>
   <script src="//cdnjs.cloudflare.com/ajax/libs/videojs-contrib-quality-levels/2.0.9/videojs-contrib-quality-levels.min.js"></script>
-  <script src="//www.unpkg.com/videojs-hls-quality-selector@1.0.5/dist/videojs-hls-quality-selector.min.js"></script>
-  
-  <script>
-    var myPlayer = videojs('player_webtv', {
-      html5: {
+          const [obsRows] = await db.execute(
+            'SELECT codigo FROM lives WHERE codigo_stm = ? AND status = "1" LIMIT 1',
+            [userId]
+          );
+          
+          if (obsRows.length > 0) {
+            const wowzaHost = 'stmv1.udicast.com';
+            streamStatus = {
+              ...streamStatus,
+              has_active_transmission: true,
+              transmission_type: 'obs',
+              stream_url: `http://${wowzaHost}:1935/samhost/${userLogin}_live/playlist.m3u8`,
+              title: `Stream OBS - ${userLogin}`,
+              playlist_name: null
+            };
+          }
         hls: {
           overrideNative: true
         }
@@ -788,22 +793,13 @@ router.get('/status', authMiddleware, async (req, res) => {
     if (playlist) {
       // Verificar transmissão de playlist específica
       [transmissionRows] = await db.execute(
-        `SELECT t.*, p.nome as playlist_nome
-         FROM transmissoes t
-         LEFT JOIN playlists p ON t.codigo_playlist = p.id
-         WHERE t.codigo_playlist = ? AND t.status = 'ativa'
-         LIMIT 1`,
+        'SELECT t.*, p.nome as playlist_nome FROM transmissoes t LEFT JOIN playlists p ON t.codigo_playlist = p.id WHERE t.codigo_playlist = ? AND t.status = "ativa" LIMIT 1',
         [playlist]
       );
     } else {
       // Verificar qualquer transmissão ativa do usuário
       [transmissionRows] = await db.execute(
-        `SELECT t.*, p.nome as playlist_nome
-         FROM transmissoes t
-         LEFT JOIN playlists p ON t.codigo_playlist = p.id
-         WHERE t.codigo_stm = ? AND t.status = 'ativa'
-         ORDER BY t.data_inicio DESC
-         LIMIT 1`,
+        'SELECT t.*, p.nome as playlist_nome FROM transmissoes t LEFT JOIN playlists p ON t.codigo_playlist = p.id WHERE t.codigo_stm = ? AND t.status = "ativa" ORDER BY t.data_inicio DESC LIMIT 1',
         [userId]
       );
     }
